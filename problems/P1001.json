@@ -1,0 +1,28 @@
+{
+    "id": "P1001",
+    "title": "A+B Problem",
+    "description": "Given two integers a and b, output their sum.",
+    "input_description": "Two integers a and b.",
+    "output_description": "Output the sum of a and b.",
+    "samples": [
+        {
+            "input": "1 2",
+            "output": "3"
+        }
+    ],
+    "constraints": "-1000000000 <= a, b <= 1000000000",
+    "testcases": [
+        {
+            "input": "1 2",
+            "output": "3"
+        },
+        {
+            "input": "10 20",
+            "output": "30"
+        },
+        {
+            "input": "-5 8",
+            "output": "3"
+        }
+    ]
+}
