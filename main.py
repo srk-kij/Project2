@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request
+from starlette.middleware.sessions import SessionMiddleware
 from fastapi.responses import JSONResponse# error
 from fastapi.exceptions import RequestValidationError #error
 
@@ -16,12 +17,119 @@ from step2_models import Submission, LanguageConfig
 from judge import judge_submission
 from language_manager import languages, validate_language_config, DEFAULT_TIME_LIMIT, DEFAULT_MEMORY_LIMIT
 from submission_store import submissions
+from step4_models import UserCredentials, RoleUpdate
+from user_store import users, username_to_id, create_user, verify_password, initialize_admin
 #
 # end - step2
 #
 
 app = FastAPI()
 
+#
+# Step 4 - Session cookie
+#
+app.add_middleware(
+    SessionMiddleware, # SessionMiddleware enables FastAPI to use `request.session`
+    # Example: After a successful login, we might store:
+    # request.session["user_id"] = user["user_id"]
+    # Therefore, for future requests, the browser sends the session back to the server, 
+    # allowing the server to recognize that "this person has already logged in."
+    secret_key="oj-step4-secret-key"
+    # Used to sign session cookies to prevent unauthorized tampering with session data.
+)
+
+# System must create the initial administrator automatically.
+initialize_admin() # calls a function from `user_store.py`
+
+#helper function
+def error_response(status_code: int, message: str):
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "code": status_code,
+            "msg": message,
+            "data": None
+        }
+    )
+# return JSONResponse(
+#     status_code=401,
+#     content={
+#         "code": 401,
+#         "msg": "not logged in",     --->
+#         "data": None
+#     }
+# )                             
+# return error_response(401, "not logged in")
+
+def current_user(request: Request):
+    user_id = request.session.get("user_id")
+
+    if user_id is None or user_id not in users:
+        return None
+
+    return users[user_id]
+
+
+def require_login(request: Request):
+    user = current_user(request)
+
+    if user is None:
+        return None, error_response(401, "not logged in")
+
+    # A user who became banned must also lose access through an old session.
+    if user["role"] == "banned":
+        return None, error_response(403, "user banned")
+
+    return user, None
+
+
+def require_admin(request: Request):
+    user, error = require_login(request)
+
+    if error is not None:
+        return None, error
+
+    if user["role"] != "admin":
+        return None, error_response(403, "permission denied")
+
+    return user, None
+
+
+def get_user_statistics(user_id: str):
+    submit_count = 0
+    resolved_problems = set() # want to count the number of unique problems solved
+
+    for submission in submissions.values():
+        if submission.get("user_id") != user_id: # Check if the submission belongs to this user
+            continue
+
+        submit_count += 1
+
+        if ( # This condition means the submission must be fully evaluated and receive the maximum score.
+            submission.get("status") == "success"
+            and submission.get("score") is not None
+            and submission.get("counts") is not None
+            and submission.get("score") == submission.get("counts")
+        ):
+            resolved_problems.add(submission["problem_id"])
+
+    return submit_count, len(resolved_problems)
+
+
+def public_user_data(user): # create "secure user data for API export"
+    submit_count, resolve_count = get_user_statistics(user["user_id"])
+
+    return {
+        "user_id": user["user_id"],
+        "username": user["username"],
+        "join_time": user["join_time"],
+        "role": user["role"],
+        "submit_count": submit_count,
+        "resolve_count": resolve_count
+    }
+#
+# end - step4
+#
 
 #
 # step1
@@ -91,7 +199,11 @@ async def root():
 
 
 @app.get("/api/problems/")
-async def get_problems():
+async def get_problems(request: Request):
+    user, error = require_login(request)
+    if error is not None:
+        return error
+
     problems = []
 
     for filename in os.listdir("problems"):
@@ -121,7 +233,11 @@ async def get_problems():
 
 
 @app.get("/api/problems/{problem_id}")
-async def get_problem(problem_id: str):
+async def get_problem(problem_id: str, request: Request):
+    user, error = require_login(request)
+    if error is not None:
+        return error
+
     path = os.path.join(
         "problems",
         f"{problem_id}.json"
@@ -154,7 +270,11 @@ async def get_problem(problem_id: str):
 
 
 @app.post("/api/problems/")
-async def add_problem(problem: Problem):
+async def add_problem(problem: Problem, request: Request):
+    user, error = require_login(request)
+    if error is not None:
+        return error
+
 
     path = os.path.join(
         "problems",
@@ -202,8 +322,13 @@ async def add_problem(problem: Problem):
 @app.put("/api/problems/{problem_id}")
 async def update_problem(
     problem_id: str,
-    problem: Problem
+    problem: Problem,
+    request: Request
 ):
+    user, error = require_login(request)
+    if error is not None:
+        return error
+
     if problem_id != problem.id: # ID in URL ,ust ,atch ID in JSON body
         return JSONResponse(
             status_code=400,
@@ -251,7 +376,11 @@ async def update_problem(
 
 
 @app.delete("/api/problems/{problem_id}")
-async def delete_problem(problem_id: str):
+async def delete_problem(problem_id: str, request: Request):
+    user, error = require_admin(request)
+    if error is not None:
+        return error
+
 
     path = os.path.join(
         "problems",
@@ -288,8 +417,13 @@ async def delete_problem(problem_id: str):
 
 @app.post("/api/submissions/")
 async def create_submission(
-    submission: Submission
+    submission: Submission,
+    request: Request
 ):
+    user, error = require_login(request)
+    if error is not None:
+        return error
+
 
     problem_path = os.path.join(
         "problems",
@@ -336,6 +470,7 @@ async def create_submission(
 
     submissions[submission_id] = {
         "submission_id": submission_id,
+        "user_id": user["user_id"],
         "status": "pending",
         "problem_id": submission.problem_id,
         "language": submission.language,
@@ -372,6 +507,7 @@ async def create_submission(
 
 @app.get("/api/submissions/")
 async def get_submissions( # 5 query parameters
+    request: Request,
     user_id: str | None = None, # None = dafault value
     problem_id: str | None = None,
     status: str | None = None,
@@ -386,6 +522,20 @@ async def get_submissions( # 5 query parameters
 # status = "success"
 # page = 1
 # page_size = 10
+
+    user, error = require_login(request)
+    if error is not None:
+        return error
+
+    # A normal user can only query their own submissions.
+    # If user_id is omitted and problem_id is given, normal users see only
+    # their own records for that problem; admins may see everybody's.
+    if user["role"] != "admin":
+        if user_id is not None and user_id != user["user_id"]:
+            return error_response(403, "permission denied")
+
+        if user_id is None:
+            user_id = user["user_id"]
 
     # user_id and problem_id are primary conditions.
     # At least one of them must be given.
@@ -556,8 +706,13 @@ async def get_submissions( # 5 query parameters
 # View details of a single submission.
 @app.get("/api/submissions/{submission_id}")
 async def get_submission(
-    submission_id: str
+    submission_id: str,
+    request: Request
 ):
+    user, error = require_login(request)
+    if error is not None:
+        return error
+
 
     if (submission_id not in submissions):
         return JSONResponse(
@@ -570,6 +725,12 @@ async def get_submission(
         )
 
     submission = submissions[submission_id]
+
+    if (
+        user["role"] != "admin"
+        and submission.get("user_id") != user["user_id"]
+    ):
+        return error_response(403, "permission denied")
 
     # Pending only needs id + status
     if (submission["status"] == "pending"):
@@ -606,8 +767,13 @@ async def get_submission(
     "/api/submissions/{submission_id}/rejudge"
 )
 async def rejudge_submission(
-    submission_id: str
+    submission_id: str,
+    request: Request
 ):
+    user, error = require_admin(request)
+    if error is not None:
+        return error
+
 
     # Submission does not exist
     if submission_id not in submissions:
@@ -665,7 +831,11 @@ async def rejudge_submission(
 # --------------------------------
 
 @app.get("/api/languages/")
-async def get_languages(): # see all language
+async def get_languages(request: Request): # see all language
+    user, error = require_login(request)
+    if error is not None:
+        return error
+
 
     return {
         "code": 200,
@@ -676,7 +846,11 @@ async def get_languages(): # see all language
     }
     # Example: in `language_manager.py`:
     #     @app.get("/api/languages/")
-    #     async def get_languages(): # see all language
+    #     async def get_languages(request: Request): # see all language
+    #       user, error = require_login(request)
+    #       if error is not None:
+    #       return error
+
     #         return {
     #             "code": 200,
     #             "msg": "success",
@@ -697,8 +871,13 @@ async def get_languages(): # see all language
 
 @app.post("/api/languages/")
 async def register_language( # Add a new language
-    language: LanguageConfig # class LanguageConfig(BaseModel): in `step2_models.py`
-): # The 'language' parameter will become an object with a structure based on LanguageConfig.
+    language: LanguageConfig, # class LanguageConfig(BaseModel): in `step2_models.py`
+    request: Request
+):
+    user, error = require_login(request)
+    if error is not None:
+        return error
+ # The 'language' parameter will become an object with a structure based on LanguageConfig.
    # now we can use language.name, language.file_ext, ...
 
     valid, message = validate_language_config(language)
@@ -752,5 +931,251 @@ async def register_language( # Add a new language
             "name": language.name
         }
     }
+# end - Languages
     
+
+# --------------------------------
+# step4 - Users and authentication
+# --------------------------------
+
+@app.post("/api/auth/login")
+async def login(
+    credentials: UserCredentials, # from step4_models
+    request: Request
+):
     
+# The client must send a POST request to `/api/auth/login` with JSON in this format:
+# {
+# "username": "qingqing",
+# "password": "123456"
+# }
+# FastAPI automatically converts this JSON into a `UserCredentials` object for us, so we can use:
+# credentials.username
+# credentials.password
+
+    # (1)
+    user_id = username_to_id.get(credentials.username) # use the entered username to look up the user_id.
+
+    # (2)
+    if user_id is None:
+        return error_response(401, "invalid username or password")
+    # (1) and (2)
+    # Here, the provided username is used to look up the `user_id`.
+    # For example:
+    # `username_to_id = { "qingqing": "abc-123" }`
+    # If logging in with "qingqing":
+    # `user_id = "abc-123"`
+    # But if the username does not exist:
+    # `user_id = None`
+    # Then:
+    # `if user_id is None: return error_response(401, "invalid username or password")`
+    # If the username is not found, the login fails.
+    # 401 indicates that authentication failed.
+
+    user = users[user_id]
+
+    if not verify_password( # check whether the entered password matches the stored hash
+        credentials.password,
+        user["password_hash"]
+    ):
+        return error_response(401, "invalid username or password")
+
+    if user["role"] == "banned":
+        return error_response(403, "user banned")
+
+    request.session["user_id"] = user_id # Used to remember who is logged in
+
+    return {
+        "code": 200,
+        "msg": "login success",
+        "data": {
+            "user_id": user["user_id"],
+            "username": user["username"],
+            "role": user["role"]
+        }
+    }
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request): # FastAPI sends the request to us, allowing us to access `request.session`.
+    
+    user, error = require_login(request)
+    # If logged in:
+    # user = {...}
+    # error = None
+
+    # If not logged in:
+    # user = None
+    # error = JSONResponse(...)
+    # return error
+    if error is not None:
+        return error
+
+    request.session.clear() # This clears all data in the session.
+    # {
+    #     "user_id": "abc-123"  --->  { }
+    # }
+
+    # So, the next time the API calls 
+    #     `current_user(request)`:
+    # `user_id = request.session.get("user_id")` will return:
+    # `None`
+    # And the system will know that this user is not logged in
+
+
+    return {
+        "code": 200,
+        "msg": "logout success",
+        "data": None
+    }
+
+
+@app.post("/api/users/admin")
+async def create_admin(
+    credentials: UserCredentials, # from step4_models
+    request: Request
+):
+    admin, error = require_admin(request)
+    if error is not None:
+        return error
+
+    if credentials.username in username_to_id:
+        return error_response(400, "username already exists")
+
+    user = create_user(
+        credentials.username,
+        credentials.password,
+        role="admin"
+    )
+
+    return {
+        "code": 200,
+        "msg": "success",
+        "data": {
+            "user_id": user["user_id"],
+            "username": user["username"]
+        }
+    }
+
+
+@app.post("/api/users/")
+async def register_user(credentials: UserCredentials): # from step4_models
+    if credentials.username in username_to_id:
+        return error_response(400, "username already exists")
+
+    user = create_user(
+        credentials.username,
+        credentials.password,
+        role="user"
+    )
+
+    return {
+        "code": 200,
+        "msg": "register success",
+        "data": public_user_data(user)
+    }
+
+
+@app.get("/api/users/{user_id}")
+async def get_user_info(
+    user_id: str,
+    request: Request
+):
+    current, error = require_login(request)
+    if error is not None:
+        return error
+
+    if user_id not in users:
+        return error_response(404, "user not found")
+
+    if (
+        current["role"] != "admin"
+        and current["user_id"] != user_id
+    ):
+        return error_response(403, "permission denied")
+
+    return {
+        "code": 200,
+        "msg": "success",
+        "data": public_user_data(users[user_id])
+    }
+
+
+@app.put("/api/users/{user_id}/role")
+async def update_user_role(
+    user_id: str,
+    role_update: RoleUpdate,
+    request: Request
+):
+    admin, error = require_admin(request)
+    if error is not None:
+        return error
+
+    if role_update.role not in ["user", "admin", "banned"]:
+        return error_response(400, "invalid role")
+
+    if user_id not in users:
+        return error_response(404, "user not found")
+
+    users[user_id]["role"] = role_update.role
+
+    return {
+        "code": 200,
+        "msg": "role updated",
+        "data": {
+            "user_id": user_id,
+            "role": role_update.role
+        }
+    }
+
+
+@app.get("/api/users/")
+async def get_users(
+    request: Request,
+    page: int | None = None,
+    page_size: int | None = None
+):
+    admin, error = require_admin(request)
+    if error is not None:
+        return error
+
+    if page is not None and page_size is None:
+        return error_response(400, "page_size is required when page is provided")
+
+    if page is not None and page <= 0:
+        return error_response(400, "page must be greater than 0")
+
+    if page_size is not None and page_size <= 0:
+        return error_response(400, "page_size must be greater than 0")
+
+    result = []
+
+    for user in users.values():
+        result.append(
+            public_user_data(user) # For every user in `users`, 
+                                   # pass that user through `public_user_data()` 
+                                   # and collect all the results into a list -> `result`
+        )
+
+    total = len(result)
+
+    if page is None and page_size is not None:
+        page = 1
+
+    if page is not None and page_size is not None:
+        start = (page - 1) * page_size
+        end = start + page_size
+        result = result[start:end]
+
+    return {
+        "code": 200,
+        "msg": "success",
+        "data": {
+            "total": total,
+            "users": result
+        }
+    }
+    
+#
+# end - step4
+#
