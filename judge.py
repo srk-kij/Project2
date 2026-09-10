@@ -489,10 +489,9 @@ async def judge_submission(
                 "counts": counts,
                 "compile_info": compile_info,
                 "run_info": {
-                    "result": "finished",
+                    "result": final_result,
                     "message":
-                        f"{len(testcases)} test cases finished; "
-                        f"result: {final_result}"
+                        f"{len(testcases)} test cases finished"
                 },
                 "error_info": ""
             })

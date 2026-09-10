@@ -24,6 +24,12 @@
             "input": "-5 8",
             "output": "3"
         }
-    ]
+    ],
+    "hint": "",
+    "source": "",
+    "tags": [],
+    "time_limit": 3.0,
+    "memory_limit": 128,
+    "author": "",
+    "difficulty": ""
 }
-

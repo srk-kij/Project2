@@ -14,17 +14,37 @@ def render_submission(data):
         return
 
     st.write("Submission ID:", data.get("submission_id", ""))
-    st.write("Status:", data.get("status", ""))
+
+    status = data.get("status", "")
+    if status == "pending":
+        st.write("Evaluation status: Pending")
+    elif status == "success":
+        st.write("Evaluation status: Finished")
+    elif status == "error":
+        st.write("Evaluation status: System Error")
+    else:
+        st.write("Evaluation status:", status)
+
+    compile_info = data.get("compile_info")
+    run_info = data.get("run_info")
+
+    judge_result = None
+
+    if compile_info and compile_info.get("result") in {"CE", "UNK"}:
+        judge_result = compile_info.get("result")
+    elif run_info:
+        judge_result = run_info.get("result")
+
+    if judge_result:
+        st.markdown(f"### Judge Result: `{judge_result}`")
 
     if data.get("score") is not None:
         st.metric("Score", f"{data.get('score')} / {data.get('counts')}")
 
-    compile_info = data.get("compile_info")
     if compile_info is not None:
         st.markdown("#### Compile information")
         st.json(compile_info)
 
-    run_info = data.get("run_info")
     if run_info is not None:
         st.markdown("#### Run information")
         st.json(run_info)
