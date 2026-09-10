@@ -13,10 +13,14 @@ import os
 #
 import asyncio
 import uuid
+from datetime import datetime, timedelta
 from step2_models import Submission, LanguageConfig
 from judge import judge_submission
 from language_manager import languages, validate_language_config, DEFAULT_TIME_LIMIT, DEFAULT_MEMORY_LIMIT
 from submission_store import submissions
+
+# Track recent submission times per user for the Step 2/4 rate limit.
+submission_times = {}
 from step4_models import UserCredentials, RoleUpdate
 from user_store import users, username_to_id, create_user, verify_password, initialize_admin
 #
@@ -424,6 +428,26 @@ async def create_submission(
     if error is not None:
         return error
 
+    # A user can submit at most 3 times within 1 minute.
+    now = datetime.now()
+    user_times = submission_times.get(
+        user["user_id"],
+        []
+    )
+
+    # Keep only submission timestamps from the latest 1 minute.
+    user_times = [
+        t
+        for t in user_times
+        if now - t < timedelta(minutes=1)
+    ]
+
+    if len(user_times) >= 3:
+        return error_response(429, "submission rate limit exceeded")
+
+    user_times.append(now)
+    submission_times[user["user_id"]] = user_times
+
 
     problem_path = os.path.join(
         "problems",
@@ -527,16 +551,6 @@ async def get_submissions( # 5 query parameters
     if error is not None:
         return error
 
-    # A normal user can only query their own submissions.
-    # If user_id is omitted and problem_id is given, normal users see only
-    # their own records for that problem; admins may see everybody's.
-    if user["role"] != "admin":
-        if user_id is not None and user_id != user["user_id"]:
-            return error_response(403, "permission denied")
-
-        if user_id is None:
-            user_id = user["user_id"]
-
     # user_id and problem_id are primary conditions.
     # At least one of them must be given.
     if (user_id is None and problem_id is None):
@@ -548,6 +562,16 @@ async def get_submissions( # 5 query parameters
                 "data": None
             }
         )
+
+    # A normal user can only query their own submissions.
+    # If user_id is omitted and problem_id is given, normal users see only
+    # their own records for that problem; admins may see everybody's.
+    if user["role"] != "admin":
+        if user_id is not None and user_id != user["user_id"]:
+            return error_response(403, "permission denied")
+
+        if user_id is None:
+            user_id = user["user_id"]
 
     # page cannot exist without page_size
     if (page is not None and page_size is None):
@@ -847,10 +871,6 @@ async def get_languages(request: Request): # see all language
     # Example: in `language_manager.py`:
     #     @app.get("/api/languages/")
     #     async def get_languages(request: Request): # see all language
-    #       user, error = require_login(request)
-    #       if error is not None:
-    #       return error
-
     #         return {
     #             "code": 200,
     #             "msg": "success",
@@ -1085,14 +1105,14 @@ async def get_user_info(
     if error is not None:
         return error
 
-    if user_id not in users:
-        return error_response(404, "user not found")
-
     if (
         current["role"] != "admin"
         and current["user_id"] != user_id
     ):
         return error_response(403, "permission denied")
+
+    if user_id not in users:
+        return error_response(404, "user not found")
 
     return {
         "code": 200,

@@ -1,0 +1,43 @@
+{
+    "id": "PTEST1",
+    "title": "A + B",
+    "description": "Given two integers A and B, output their sum.",
+    "input_description": "The input contains two integers A and B.",
+    "output_description": "Output one integer, A + B.",
+    "samples": [
+        {
+            "input": "1 2\n",
+            "output": "3\n"
+        },
+        {
+            "input": "10 20\n",
+            "output": "30\n"
+        }
+    ],
+    "constraints": "-1000 <= A, B <= 1000",
+    "testcases": [
+        {
+            "input": "1 2\n",
+            "output": "3\n"
+        },
+        {
+            "input": "10 20\n",
+            "output": "30\n"
+        },
+        {
+            "input": "-5 8\n",
+            "output": "3\n"
+        },
+        {
+            "input": "1000 -1000\n",
+            "output": "0\n"
+        }
+    ],
+    "hint": "",
+    "source": "",
+    "tags": [],
+    "time_limit": 3.0,
+    "memory_limit": 128,
+    "author": "",
+    "difficulty": ""
+}
